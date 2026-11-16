@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zoya-shopping
+  labels:
+    app: zoya
+    environment: production
