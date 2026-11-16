@@ -1,0 +1,21 @@
+metadata:
+  name: zoya-application
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: YOUR_GITHUB_REPOSITORY_URL
+    targetRevision: main
+    path: Kubernetes
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: zoya-shopping
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
