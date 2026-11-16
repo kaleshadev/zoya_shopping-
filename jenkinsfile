@@ -1,0 +1,115 @@
+
+pipeline {
+    agent any
+
+    tools {
+        nodejs 'NodeJS-20'
+    }
+
+    environment {
+        DOCKER_IMAGE = 'YOUR_DOCKERHUB_USERNAME/zoya'
+        DOCKER_CREDENTIALS = 'dockerhub-creds'
+        SONAR_SERVER = 'sonarqube-server'
+    }
+
+    stages {
+
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main',
+                url: 'YOUR_GITHUB_REPOSITORY_URL'
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+            }
+        }
+
+        stage('Unit Testing') {
+            steps {
+                sh 'CI=true npm test'
+            }
+        }
+
+        stage('Build React Application') {
+            steps {
+                sh 'npm run build'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONAR_SERVER}") {
+                    sh '''
+                    sonar-scanner \
+                    -Dsonar.projectKey=zoya-ecommerce \
+                    -Dsonar.sources=src \
+                    -Dsonar.exclusions=**/node_modules/**
+                    '''
+                }
+            }
+        }
+
+        stage('OWASP Dependency Check') {
+            steps {
+                dependencyCheck additionalArguments: '''
+                    --scan . 
+                    --format HTML
+                    --format XML
+                    ''',
+                    odcInstallation: 'DP-Check'
+
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+
+        stage('Trivy Filesystem Scan') {
+            steps {
+                sh 'trivy fs --exit-code 0 --severity HIGH,CRITICAL .'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh "docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} ."
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${DOCKER_CREDENTIALS}",
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login \
+                    -u "$DOCKER_USER" --password-stdin
+                    '''
+                    sh "docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                    sh 'docker logout'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'ZOYA build and Docker push completed successfully.'
+        }
+
+        failure {
+            echo 'ZOYA pipeline failed. Check Jenkins console output.'
+        }
+    }
+}
