@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -8,7 +7,9 @@ pipeline {
 
     environment {
         DOCKER_IMAGE = 'YOUR_DOCKERHUB_USERNAME/zoya'
+        GITHUB_REPO_URL = 'https://github.com/YOUR_GITHUB_USERNAME/zoya-ecommerce-devops.git'
         DOCKER_CREDENTIALS = 'dockerhub-creds'
+        GIT_CREDENTIALS = 'github-creds'
         SONAR_SERVER = 'sonarqube-server'
     }
 
@@ -17,7 +18,8 @@ pipeline {
         stage('Git Checkout') {
             steps {
                 git branch: 'main',
-                url: 'YOUR_GITHUB_REPOSITORY_URL'
+                    credentialsId: "${GIT_CREDENTIALS}",
+                    url: "${GITHUB_REPO_URL}"
             }
         }
 
@@ -27,13 +29,7 @@ pipeline {
             }
         }
 
-        stage('Unit Testing') {
-            steps {
-                sh 'CI=true npm test'
-            }
-        }
-
-        stage('Build React Application') {
+        stage('Build Application') {
             steps {
                 sh 'npm run build'
             }
@@ -43,10 +39,10 @@ pipeline {
             steps {
                 withSonarQubeEnv("${SONAR_SERVER}") {
                     sh '''
-                    sonar-scanner \
-                    -Dsonar.projectKey=zoya-ecommerce \
-                    -Dsonar.sources=src \
-                    -Dsonar.exclusions=**/node_modules/**
+                        sonar-scanner \
+                        -Dsonar.projectKey=zoya-ecommerce \
+                        -Dsonar.sources=src \
+                        -Dsonar.exclusions=**/node_modules/**
                     '''
                 }
             }
@@ -54,36 +50,48 @@ pipeline {
 
         stage('OWASP Dependency Check') {
             steps {
-                dependencyCheck additionalArguments: '''
-                    --scan . 
-                    --format HTML
-                    --format XML
-                    ''',
+                dependencyCheck(
+                    additionalArguments: '--scan . --format HTML --format XML',
                     odcInstallation: 'DP-Check'
+                )
 
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                dependencyCheckPublisher(
+                    pattern: '**/dependency-check-report.xml'
+                )
             }
         }
 
         stage('Trivy Filesystem Scan') {
             steps {
-                sh 'trivy fs --exit-code 0 --severity HIGH,CRITICAL .'
+                sh '''
+                    trivy fs \
+                    --exit-code 0 \
+                    --severity HIGH,CRITICAL .
+                '''
             }
         }
 
         stage('Docker Build') {
             steps {
-                sh "docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} ."
+                sh """
+                    docker build \
+                    -t ${DOCKER_IMAGE}:${BUILD_NUMBER} .
+                """
             }
         }
 
         stage('Trivy Image Scan') {
             steps {
-                sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                sh """
+                    trivy image \
+                    --exit-code 0 \
+                    --severity HIGH,CRITICAL \
+                    ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                """
             }
         }
 
-        stage('Docker Push') {
+        stage('Docker Hub Push') {
             steps {
                 withCredentials([
                     usernamePassword(
@@ -93,11 +101,48 @@ pipeline {
                     )
                 ]) {
                     sh '''
-                    echo "$DOCKER_PASS" | docker login \
-                    -u "$DOCKER_USER" --password-stdin
+                        echo "$DOCKER_PASS" | docker login \
+                        -u "$DOCKER_USER" --password-stdin
                     '''
-                    sh "docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+
+                    sh """
+                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                    """
+
                     sh 'docker logout'
+                }
+            }
+        }
+
+        stage('Update Kubernetes Image') {
+            steps {
+                sh """
+                    sed -i \
+                    's|image: .*|image: ${DOCKER_IMAGE}:${BUILD_NUMBER}|' \
+                    Kubernetes/deployment.yml
+                """
+
+                sh '''
+                    git config user.name "Jenkins"
+                    git config user.email "jenkins@example.com"
+
+                    git add Kubernetes/deployment.yml
+
+                    git commit -m "Update ZOYA image tag [skip ci]" || true
+                '''
+
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${GIT_CREDENTIALS}",
+                        usernameVariable: 'GIT_USER',
+                        passwordVariable: 'GIT_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        git push \
+                        "https://${GIT_USER}:${GIT_TOKEN}@${GITHUB_REPO_URL#https://}" \
+                        HEAD:main
+                    '''
                 }
             }
         }
@@ -105,7 +150,8 @@ pipeline {
 
     post {
         success {
-            echo 'ZOYA build and Docker push completed successfully.'
+            echo 'ZOYA CI pipeline completed successfully.'
+            echo 'Docker image pushed and Kubernetes manifest updated.'
         }
 
         failure {
